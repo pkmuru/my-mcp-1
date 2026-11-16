@@ -1,0 +1,39 @@
+[project]
+name = "staat-assist-mcp"
+version = "0.1.0"
+description = "FastMCP server exposing backend APIs as MCP tools, secured with Entra ID (MSAL) + On-Behalf-Of"
+readme = "README.md"
+authors = [
+    { name = "pkmuru", email = "pkmuru@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastmcp>=4.2.0",
+    "httpx>=0.28.1",
+    "httpx-sse>=0.4.3",
+    "msal>=1.39.0",
+    "pydantic-settings>=2.16.3",
+]
+
+[project.scripts]
+staat-assist-mcp = "staat_assist_mcp.server:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "respx>=0.23.1",
+    "ruff>=0.17.5",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
