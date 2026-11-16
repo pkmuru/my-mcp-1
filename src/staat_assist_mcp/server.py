@@ -2,6 +2,9 @@
 
 import logging
 
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+
 from . import tools  # noqa: F401  (registers the tools)
 from .app import mcp, settings
 
@@ -25,12 +28,25 @@ def main() -> None:
         {name: f"{cfg.base_url} (scope={cfg.scope})" for name, cfg in settings.backends.items()},
         settings.log_level,
     )
+    middleware = []
+    if settings.cors_origin_list:
+        log.info("CORS enabled for origins=%s", settings.cors_origin_list)
+        middleware.append(
+            Middleware(
+                CORSMiddleware,
+                allow_origins=settings.cors_origin_list,
+                allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+                allow_headers=["*"],
+                expose_headers=["mcp-session-id", "www-authenticate"],
+            )
+        )
     mcp.run(
         transport="http",
         host=settings.host,
         port=settings.port,
         log_level=settings.log_level.lower(),
         stateless_http=True,
+        middleware=middleware,
     )
 
 

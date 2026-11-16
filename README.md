@@ -24,6 +24,12 @@ port can call the tools, and backends are called without an `Authorization` head
 settings are then optional. Use it with mock or unauthenticated backends, e.g. to try tools in the
 MCP Inspector or with `fastmcp call` without a token. Never set it in a deployed environment.
 
+### CORS (browser clients)
+
+Off by default. Set `CORS_ORIGINS` to a comma-separated list of origins (or `*`) when a browser calls
+the server directly, e.g. the MCP Inspector with Connection Type "Direct":
+`CORS_ORIGINS=http://localhost:6274`. Not needed for "Via Proxy", `fastmcp call` or the LangGraph agent.
+
 ## Add a tool
 
 Create a module in `src/staat_assist_mcp/tools/` and add it to `tools/__init__.py`

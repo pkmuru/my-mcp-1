@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     base_url: str = "http://localhost:8000"
+    # Browser origins allowed to call the server directly (comma-separated, or "*"). Empty = CORS off.
+    # Only needed for browser-based clients such as the MCP Inspector in "Direct" connection mode.
+    cors_origins: str = ""
 
     # Diagnostics
     log_level: str = "INFO"
@@ -65,6 +68,10 @@ class Settings(BaseSettings):
     @property
     def required_scope_list(self) -> list[str]:
         return [s.strip() for s in self.required_scopes.split(",") if s.strip()]
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def authority(self) -> str:
