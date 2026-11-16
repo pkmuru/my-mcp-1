@@ -17,6 +17,13 @@ uv run staat-assist-mcp   # http://localhost:8000/mcp
 uv run pytest
 ```
 
+### Running without auth (local dev)
+
+`AUTH_ENABLED=false` turns off token validation **and** the OBO exchange: anyone who can reach the
+port can call the tools, and backends are called without an `Authorization` header. The `AZURE_*`
+settings are then optional. Use it with mock or unauthenticated backends, e.g. to try tools in the
+MCP Inspector or with `fastmcp call` without a token. Never set it in a deployed environment.
+
 ## Add a tool
 
 Create a module in `src/staat_assist_mcp/tools/` and add it to `tools/__init__.py`
@@ -26,9 +33,10 @@ Create a module in `src/staat_assist_mcp/tools/` and add it to `tools/__init__.p
 from ..app import mcp
 from ..backend import backend
 
+
 @mcp.tool
 async def get_account(account_id: str) -> dict:
-    """Fetch account details by id."""          # the LLM reads this
+    """Fetch account details by id."""  # the LLM reads this
     return await backend("someservice").get(f"/accounts/{account_id}")
 ```
 
@@ -74,8 +82,10 @@ from langchain.agents import create_agent
 from langchain.mcp import MCPAdapter
 from langgraph.config import get_stream_writer
 
+
 async def on_progress(progress, total, message):
-    get_stream_writer()({"tool_chunk": message})        # arrives with stream_mode="custom"
+    get_stream_writer()({"tool_chunk": message})  # arrives with stream_mode="custom"
+
 
 client = Client(MCP_URL, auth=user_access_token, verify=False, progress_handler=on_progress)
 async with MCPAdapter(client) as adapter:
