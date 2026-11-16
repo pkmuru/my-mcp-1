@@ -66,3 +66,17 @@ async def test_tools_are_listed():
     async with Client(mcp) as client:
         names = {tool.name for tool in await client.list_tools()}
     assert {"lookup_client", "ask_cio", "placeholder_tool"} <= names
+
+
+@respx.mock
+async def test_auth_disabled_calls_backend_without_token(monkeypatch, fake_obo):
+    from staat_assist_mcp.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "auth_enabled", False)
+    route = respx.get("http://someservice/find-contact").mock(return_value=httpx.Response(200, json=[]))
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_client", {"email": "a@b.com"})
+
+    assert result.data["match_count"] == 0
+    assert "authorization" not in route.calls.last.request.headers
+    assert fake_obo == []

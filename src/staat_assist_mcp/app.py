@@ -60,7 +60,7 @@ class RequestContextMiddleware(Middleware):
 mcp = FastMCP(
     "staat-assist",
     instructions="Tools for looking up clients and answering CIO (Chief Investment Office) questions.",
-    auth=build_auth(settings),
+    auth=build_auth(settings) if settings.auth_enabled else None,
 )
 mcp.add_middleware(RequestContextMiddleware())
 if settings.log_payloads:

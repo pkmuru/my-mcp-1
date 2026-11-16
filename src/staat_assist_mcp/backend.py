@@ -61,7 +61,9 @@ class BackendClient:
 
     async def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers = {"x-request-id": request_id_var.get(), **(extra or {})}
-        if self.cfg.scope:
+        if not get_settings().auth_enabled:
+            log.debug("AUTH_ENABLED=false; calling backend=%s without Authorization", self.name)
+        elif self.cfg.scope:
             headers["Authorization"] = f"Bearer {await auth.obo.get_token(self.cfg.scope)}"
         else:
             log.debug("backend=%s has no scope configured; calling without Authorization", self.name)

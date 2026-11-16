@@ -9,6 +9,10 @@ log = logging.getLogger("staat_assist_mcp")
 
 
 def main() -> None:
+    if not settings.auth_enabled:
+        log.warning(
+            "AUTH_ENABLED=false: the server accepts UNAUTHENTICATED requests and calls backends without a token"
+        )
     if not settings.ssl_verify:
         log.warning("SSL_VERIFY=false: TLS certificate verification is DISABLED for all outbound calls")
     log.info(

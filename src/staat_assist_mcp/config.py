@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,10 +21,14 @@ class BackendSettings(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_nested_delimiter="__", extra="ignore")
 
-    # Entra ID app registration of THIS MCP server
-    azure_tenant_id: str
-    azure_client_id: str
-    azure_client_secret: str
+    # AUTH_ENABLED=false turns off BOTH inbound token validation and the outbound OBO exchange
+    # (backends are then called without an Authorization header). Local development only.
+    auth_enabled: bool = True
+
+    # Entra ID app registration of THIS MCP server; required when auth is enabled
+    azure_tenant_id: str = ""
+    azure_client_id: str = ""
+    azure_client_secret: str = ""
     azure_authority_host: str = "login.microsoftonline.com"
     # Comma-separated short scope names from "Expose an API", e.g. "access_as_user"
     required_scopes: str = "access_as_user"
@@ -43,6 +47,20 @@ class Settings(BaseSettings):
     ssl_verify: bool = False
 
     backends: dict[str, BackendSettings] = {}
+
+    @model_validator(mode="after")
+    def _require_azure_settings_when_auth_enabled(self) -> "Settings":
+        if self.auth_enabled:
+            missing = [
+                name.upper()
+                for name in ("azure_tenant_id", "azure_client_id", "azure_client_secret")
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(
+                    f"{', '.join(missing)} must be set (or set AUTH_ENABLED=false for local dev)"
+                )
+        return self
 
     @property
     def required_scope_list(self) -> list[str]:
