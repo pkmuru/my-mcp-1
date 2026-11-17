@@ -17,7 +17,7 @@ async def placeholder_tool(
 ) -> dict[str, Any]:
     """Placeholder tool that is not implemented yet. Do not call it."""
     # Typical body:
-    #   return await backend("someservice").get("/some/path", params={"q": text})
-    #   return await backend("someservice").post("/some/path", json={"q": text})
-    #   return await backend("someservice").stream_sse("POST", "/some/stream", json={...}, ctx=ctx)
+    #   return await backend("orders").get("/some/path", params={"q": text})
+    #   return await backend("orders").post("/some/path", json={"q": text})
+    #   return await backend("orders").stream("POST", "/some/stream", json={...}, ctx=ctx)
     return {"status": "not_implemented", "echo": text}

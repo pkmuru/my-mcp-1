@@ -59,8 +59,12 @@ class RequestContextMiddleware(Middleware):
 
 mcp = FastMCP(
     "staat-assist",
-    instructions="Tools for looking up clients and answering CIO (Chief Investment Office) questions.",
+    instructions=(
+        "Lookup tools (lookup_*): search the user's clients and fetch a client's insight document. "
+        "ask_cio answers CIO (Chief Investment Office) questions."
+    ),
     auth=build_auth(settings) if settings.auth_enabled else None,
+    on_duplicate="error",  # two tools with one name is a mistake, not an override
 )
 mcp.add_middleware(RequestContextMiddleware())
 if settings.log_payloads:

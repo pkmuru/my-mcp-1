@@ -1,10 +1,10 @@
 """Backend HTTP access for tools.
 
-    data = await backend("someservice").get("/find-contact", params={"email": email})
-    text = await backend("someservice").stream_sse("POST", "/cio/chat/streaming", json={...}, ctx=ctx)
+    data = await backend("lookup").post("/contact-lookup/search", json={"text": "james"})
+    answer = await backend("cio").stream("POST", "/cio/chat/streaming", json={...}, ctx=ctx)
 
-Each call gets an OBO token for the backend's scope, is logged with timing, and maps
-failures to ToolError so the agent (and the developer) sees what went wrong.
+Each call is authorized the way the backend's `auth` says (backends.yaml), is logged with timing,
+and maps failures to ToolError so the agent (and the developer) sees what went wrong.
 """
 
 import json as jsonlib
@@ -21,6 +21,7 @@ from httpx_sse import ServerSentEvent, aconnect_sse
 from . import auth
 from .config import BackendSettings, get_settings
 from .logging_config import request_id_var, truncate
+from .sse import SseItem, StreamResult, parse_event
 
 log = logging.getLogger(__name__)
 
@@ -34,21 +35,29 @@ def _client() -> httpx.AsyncClient:
     return _http
 
 
-def default_sse_extract(event: ServerSentEvent) -> str | None:
-    """Turn one SSE event into a text chunk (None = skip). Pass your own `extract` if a backend differs."""
-    data = event.data
-    if not data or data.strip() == "[DONE]":
-        return None
+class BackendError(ToolError):
+    """A backend answered with an error status. Tools can check `.status`, e.g. to treat 404 as "not found"."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def problem_text(body: str) -> str | None:
+    """Readable message from a problem+json error body (title, detail, validation errors); None if not one."""
     try:
-        payload = jsonlib.loads(data)
+        problem = jsonlib.loads(body)
     except ValueError:
-        return data
-    if isinstance(payload, dict):
-        for key in ("content", "text", "delta", "answer", "message"):
-            if isinstance(payload.get(key), str):
-                return payload[key]
         return None
-    return str(payload)
+    if not isinstance(problem, dict):
+        return None
+    parts = [str(problem[key]) for key in ("title", "detail") if problem.get(key)]
+    errors = problem.get("errors")
+    if isinstance(errors, dict):
+        for field, messages in errors.items():
+            messages = messages if isinstance(messages, list) else [messages]
+            parts.append(f"{field}: {' '.join(str(m) for m in messages)}")
+    return " | ".join(parts) or None
 
 
 class BackendClient:
@@ -60,19 +69,26 @@ class BackendClient:
         return f"{self.cfg.base_url.rstrip('/')}/{path.lstrip('/')}"
 
     async def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        headers = {"x-request-id": request_id_var.get(), **(extra or {})}
-        if not get_settings().auth_enabled:
+        cfg = self.cfg
+        headers = {"x-request-id": request_id_var.get(), **(extra or {}), **cfg.headers}
+        if cfg.auth == "api":
+            headers[cfg.api_key_header] = cfg.api_key
+        elif cfg.auth in ("obo", "app", "passthrough") and not get_settings().auth_enabled:
             log.debug("AUTH_ENABLED=false; calling backend=%s without Authorization", self.name)
-        elif self.cfg.scope:
-            headers["Authorization"] = f"Bearer {await auth.obo.get_token(self.cfg.scope)}"
-        else:
-            log.debug("backend=%s has no scope configured; calling without Authorization", self.name)
+        elif cfg.auth == "obo":
+            headers["Authorization"] = f"Bearer {await auth.obo.get_token(cfg.scopes)}"
+        elif cfg.auth == "app":
+            headers["Authorization"] = f"Bearer {await auth.obo.get_app_token(cfg.scopes)}"
+        elif cfg.auth == "passthrough":
+            headers["Authorization"] = f"Bearer {auth.user_token()}"
         return headers
 
-    def _fail(self, method: str, url: str, status: int, body: str) -> ToolError:
+    def _fail(self, method: str, url: str, status: int, body: str) -> "BackendError":
         log.error("backend=%s %s %s -> %s body=%s", self.name, method, url, status, truncate(body))
-        return ToolError(
-            f"Backend '{self.name}' returned HTTP {status} for {method} {url}: {truncate(body, 300)}"
+        # Problem details are passed on whole so the agent can read what to correct.
+        reason = problem_text(body) or truncate(body, 300)
+        return BackendError(
+            status, f"Backend '{self.name}' returned HTTP {status} for {method} {url}: {reason}"
         )
 
     async def request(
@@ -83,8 +99,13 @@ class BackendClient:
         params: dict[str, Any] | None = None,
         json: Any = None,
         headers: dict[str, str] | None = None,
+        raw: bool = False,
     ) -> Any:
-        """Call a JSON API. Returns the parsed JSON body (or text if the response is not JSON)."""
+        """Call an API. Returns the parsed JSON body, or the text if the response is not JSON.
+
+        `raw=True` always returns the text exactly as sent, for backends that answer with plain text
+        or HTML (parsing would turn an id like "12345" into a number).
+        """
         url = self._url(path)
         request_headers = await self._headers(headers)
         log.info("backend=%s -> %s %s params=%s", self.name, method, url, params)
@@ -94,7 +115,12 @@ class BackendClient:
         started = time.perf_counter()
         try:
             response = await _client().request(
-                method, url, params=params, json=json, headers=request_headers, timeout=self.cfg.timeout
+                method,
+                url,
+                params=params,
+                json=json,
+                headers=request_headers,
+                timeout=self.cfg.timeout_seconds,
             )
         except httpx.HTTPError as exc:
             log.exception("backend=%s %s %s failed", self.name, method, url)
@@ -110,6 +136,8 @@ class BackendClient:
         if get_settings().log_payloads:
             log.debug("backend=%s response body=%s", self.name, truncate(response.text))
 
+        if raw:
+            return response.text
         try:
             return response.json()
         except ValueError:
@@ -121,7 +149,7 @@ class BackendClient:
     async def post(self, path: str, **kwargs: Any) -> Any:
         return await self.request("POST", path, **kwargs)
 
-    async def stream_sse(
+    async def stream(
         self,
         method: str,
         path: str,
@@ -130,20 +158,22 @@ class BackendClient:
         params: dict[str, Any] | None = None,
         json: Any = None,
         headers: dict[str, str] | None = None,
-        extract: Callable[[ServerSentEvent], str | None] = default_sse_extract,
-    ) -> str:
+        extract: Callable[[ServerSentEvent], str | None] | None = None,
+    ) -> StreamResult:
         """Consume an SSE endpoint.
 
-        Each chunk is forwarded to the MCP client as a progress notification (live updates in
-        LangGraph); the concatenated text is returned as the tool result for the LLM.
+        Each text chunk is forwarded to the MCP client as a progress notification (live updates in
+        the agent); the concatenated text, plus any follow-up suggestions, is returned for the tool
+        result. Events are read the way the backend's `sse` setting says; pass `extract` to override.
         """
         url = self._url(path)
         request_headers = await self._headers(headers)
         log.info("backend=%s -> %s %s (SSE)", self.name, method, url)
-        timeout = httpx.Timeout(self.cfg.timeout, read=self.cfg.sse_read_timeout)
+        timeout = httpx.Timeout(self.cfg.timeout_seconds, read=self.cfg.sse_read_timeout_seconds)
 
         started = time.perf_counter()
         chunks: list[str] = []
+        result = StreamResult()
         events = 0
         try:
             async with aconnect_sse(
@@ -165,11 +195,18 @@ class BackendClient:
                             event.event,
                             truncate(event.data, 200),
                         )
-                    chunk = extract(event)
-                    if chunk:
-                        chunks.append(chunk)
+                    if extract is not None:
+                        chunk = extract(event)
+                        items = [SseItem("chunk", chunk)] if chunk else []
+                    else:
+                        items = parse_event(event, self.cfg)
+                    for item in items:
+                        if item.kind == "followup":
+                            result.followups.append(item.value)
+                            continue
+                        chunks.append(item.value)
                         if ctx is not None:
-                            await ctx.report_progress(progress=len(chunks), message=chunk)
+                            await ctx.report_progress(progress=len(chunks), message=item.value)
         except ToolError:
             raise
         except Exception as exc:  # httpx errors, non-SSE content type, broken stream
@@ -178,21 +215,22 @@ class BackendClient:
                 f"Backend '{self.name}' SSE stream {method} {url} failed after {events} events: {exc!r}"
             ) from exc
 
-        text = "".join(chunks)
+        result.text = "".join(chunks)
         log.info(
-            "backend=%s <- SSE %s %s done: %d events, %d chars in %.0fms",
-            self.name, method, url, events, len(text), (time.perf_counter() - started) * 1000,
+            "backend=%s <- SSE %s %s done: %d events, %d chars, %d followups in %.0fms",
+            self.name, method, url, events, len(result.text), len(result.followups),
+            (time.perf_counter() - started) * 1000,
         )  # fmt: skip
-        return text
+        return result
 
 
 def backend(name: str) -> BackendClient:
-    """Client for a backend configured via BACKENDS__<NAME>__BASE_URL / __SCOPE."""
+    """Client for a backend from backends.yaml."""
     backends = get_settings().backends
     cfg = backends.get(name.lower())
     if cfg is None:
         raise ToolError(
-            f"Backend '{name}' is not configured. Set BACKENDS__{name.upper()}__BASE_URL "
+            f"Backend '{name}' is not configured. Add it to backends.yaml "
             f"(configured: {sorted(backends) or 'none'})."
         )
     return BackendClient(name.lower(), cfg)

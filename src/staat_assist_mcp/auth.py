@@ -6,6 +6,9 @@ Outbound: exchange that token for a backend-scoped token via the On-Behalf-Of (O
 
 import logging
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import anyio
 import httpx2
@@ -48,7 +51,11 @@ def build_auth(settings: Settings) -> RemoteAuthProvider:
 
 
 class OboTokenProvider:
-    """Exchanges the caller's token for a backend token (OBO), cached by MSAL per user + scope."""
+    """Gets backend tokens from Entra ID, cached by MSAL.
+
+    get_token:      for the signed-in user (On-Behalf-Of), cached per user + scope.
+    get_app_token:  for this server itself (client credentials), no user involved.
+    """
 
     def __init__(self, settings: Settings):
         self._settings = settings
@@ -67,24 +74,37 @@ class OboTokenProvider:
                 )
             return self._app
 
-    def _acquire(self, user_token: str, scope: str) -> dict:
-        return self._get_app().acquire_token_on_behalf_of(user_assertion=user_token, scopes=[scope])
-
-    async def get_token(self, scope: str) -> str:
+    async def get_token(self, scopes: str | list[str]) -> str:
         access = get_access_token()
         if access is None:
             raise ToolError("No authenticated user token on this request; cannot perform OBO exchange.")
+        return await self._acquire(
+            "OBO",
+            scopes,
+            lambda app, scope: app.acquire_token_on_behalf_of(user_assertion=access.token, scopes=scope),
+        )
 
+    async def get_app_token(self, scopes: str | list[str]) -> str:
+        return await self._acquire(
+            "App", scopes, lambda app, scope: app.acquire_token_for_client(scopes=scope)
+        )
+
+    async def _acquire(
+        self, kind: str, scopes: str | list[str], call: Callable[[Any, list[str]], dict]
+    ) -> str:
+        """Run one MSAL call (blocking, so in a thread) and turn a refusal into a readable ToolError."""
+        scope = scopes.split() if isinstance(scopes, str) else scopes
         try:
-            result = await anyio.to_thread.run_sync(self._acquire, access.token, scope)
+            result = await anyio.to_thread.run_sync(lambda: call(self._get_app(), scope))
         except Exception as exc:  # network / TLS / discovery failures
-            log.exception("OBO exchange failed before reaching Entra (scope=%s)", scope)
-            raise ToolError(f"OBO token exchange failed for scope '{scope}': {exc}") from exc
+            log.exception("%s token request failed before reaching Entra (scope=%s)", kind, scope)
+            raise ToolError(f"{kind} token request failed for scope {scope}: {exc}") from exc
 
         if "access_token" not in result:
             codes = result.get("error_codes")
             log.error(
-                "OBO exchange rejected scope=%s error=%s codes=%s correlation_id=%s description=%s",
+                "%s token request rejected scope=%s error=%s codes=%s correlation_id=%s description=%s",
+                kind,
                 scope,
                 result.get("error"),
                 codes,
@@ -92,17 +112,46 @@ class OboTokenProvider:
                 result.get("error_description"),
             )
             raise ToolError(
-                f"OBO token exchange failed for scope '{scope}': {result.get('error')} {codes} "
+                f"{kind} token request failed for scope {scope}: {result.get('error')} {codes} "
                 f"(Entra correlation_id={result.get('correlation_id')}): {result.get('error_description')}"
             )
 
         log.debug(
-            "OBO token acquired scope=%s source=%s expires_in=%ss",
+            "%s token acquired scope=%s source=%s expires_in=%ss",
+            kind,
             scope,
             result.get("token_source", "unknown"),
             result.get("expires_in"),
         )
         return result["access_token"]
+
+
+@dataclass(frozen=True)
+class User:
+    """The signed-in user, from the claims of the validated token."""
+
+    id: str | None  # preferred_username, upn or email
+    gpn: str | None  # the financial advisor's GPN
+
+
+def current_user() -> User:
+    settings = get_settings()
+    access = get_access_token()
+    if access is None:  # only with AUTH_ENABLED=false: a stand-in user for local development
+        return User(settings.dev_user_id or None, settings.dev_gpn or None)
+    claims = access.claims
+    user_id = next(
+        (claims[name] for name in ("preferred_username", "upn", "email") if claims.get(name)), None
+    )
+    return User(user_id, str(claims.get(settings.gpn_claim) or "").strip() or None)
+
+
+def user_token() -> str:
+    """The caller's own bearer token, for backends with auth "passthrough"."""
+    access = get_access_token()
+    if access is None:
+        raise ToolError("No authenticated user token on this request; cannot pass it through to the backend.")
+    return access.token
 
 
 obo = OboTokenProvider(get_settings())
