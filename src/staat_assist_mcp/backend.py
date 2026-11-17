@@ -5,6 +5,7 @@
 
 Each call is authorized the way the backend's `auth` says (config.yaml), is logged with timing,
 and maps failures to ToolError so the agent (and the developer) sees what went wrong.
+With `http_log` on, every request and response is also logged in full (logger staat_assist_mcp.http).
 """
 
 import json as jsonlib
@@ -24,15 +25,62 @@ from .logging_config import request_id_var, truncate
 from .sse import SseItem, StreamResult, parse_event
 
 log = logging.getLogger(__name__)
+trace = logging.getLogger("staat_assist_mcp.http")
 
 _http: httpx.AsyncClient | None = None
+
+_TRACE_BODY_LIMIT = 32 * 1024
+_TRACE_STARTED = "staat_assist_mcp.started"  # request extension: when the request went out
 
 
 def _client() -> httpx.AsyncClient:
     global _http
     if _http is None:
-        _http = httpx.AsyncClient(verify=get_settings().ssl_verify)
+        _http = httpx.AsyncClient(
+            verify=get_settings().ssl_verify,
+            event_hooks={"request": [_trace_request], "response": [_trace_response]},
+        )
     return _http
+
+
+def _trace_headers(headers: httpx.Headers) -> str:
+    return " | ".join(f"{name}: {value}" for name, value in headers.multi_items())
+
+
+def _trace_body(content: bytes) -> str:
+    return truncate(content.decode(errors="replace"), _TRACE_BODY_LIMIT) if content else "(empty)"
+
+
+async def _trace_request(request: httpx.Request) -> None:
+    """http_log: the request as sent, every header included (Authorization too)."""
+    if not get_settings().http_log:
+        return
+    request.extensions[_TRACE_STARTED] = time.perf_counter()
+    try:
+        body = _trace_body(request.content)
+    except httpx.RequestNotRead:
+        body = "(streamed)"
+    trace.info(
+        "--> %s %s headers [%s] body %s", request.method, request.url, _trace_headers(request.headers), body
+    )
+
+
+async def _trace_response(response: httpx.Response) -> None:
+    """http_log: the response with its headers and body. An SSE body is not read here (that would hold
+    the stream back until it ends); `stream` logs each event as it arrives instead."""
+    if not get_settings().http_log:
+        return
+    request = response.request
+    started = request.extensions.get(_TRACE_STARTED)
+    elapsed = f"{(time.perf_counter() - started) * 1000:.0f} ms" if started is not None else "? ms"
+    if response.headers.get("content-type", "").startswith("text/event-stream"):
+        body = "(event stream, events follow)"
+    else:
+        body = _trace_body(await response.aread())
+    trace.info(
+        "<-- %s %s %s (%s) headers [%s] body %s",
+        response.status_code, request.method, request.url, elapsed, _trace_headers(response.headers), body,
+    )  # fmt: skip
 
 
 class BackendError(ToolError):
@@ -188,6 +236,8 @@ class BackendClient:
 
                 async for event in source.aiter_sse():
                     events += 1
+                    if get_settings().http_log:
+                        trace.info("<-- SSE event %d %s: %s", events, event.event, event.data)
                     if get_settings().log_payloads:
                         log.debug(
                             "backend=%s SSE event=%s data=%s",

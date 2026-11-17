@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     # Diagnostics
     log_level: str = "INFO"
     log_payloads: bool = False  # log tool arguments/results and backend bodies (may contain client data)
+    # Log every backend request and response in full: URL, all headers (Authorization included), body.
+    http_log: bool = False
 
     # TLS verification for ALL outbound calls (backends, Entra token endpoint, JWKS).
     # Off by default as requested; set SSL_VERIFY=true to re-enable.

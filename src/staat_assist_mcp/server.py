@@ -46,6 +46,8 @@ def main() -> None:
         )
     if not settings.ssl_verify:
         log.warning("SSL_VERIFY=false: TLS certificate verification is DISABLED for all outbound calls")
+    if settings.http_log:
+        log.warning("HTTP_LOG=true: backend requests and responses are logged in full, tokens included")
     log.info(
         "starting on %s:%s tenant=%s client_id=%s required_scopes=%s log_level=%s",
         settings.host,

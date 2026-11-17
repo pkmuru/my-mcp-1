@@ -7,7 +7,7 @@ import pytest
 import respx
 from pydantic import ValidationError
 
-from staat_assist_mcp.backend import backend
+from staat_assist_mcp.backend import BackendError, backend
 from staat_assist_mcp.config import BackendSettings, Settings, get_settings
 
 
@@ -55,6 +55,43 @@ async def test_backend_without_auth(backends, fake_obo):
     await backend("open").get("/ping")
 
     assert "authorization" not in route.calls.last.request.headers and fake_obo == []
+
+
+@respx.mock
+async def test_http_log_traces_requests_and_responses_in_full(backends, fake_obo, monkeypatch, caplog):
+    monkeypatch.setattr(get_settings(), "http_log", True)
+    backends(orders={"base_url": "http://orders", "auth": "obo", "scopes": ["api://orders/.default"]})
+    respx.post("http://orders/orders").mock(return_value=httpx.Response(201, json={"id": 1}))
+    respx.get("http://orders/missing").mock(return_value=httpx.Response(404, text="no such order"))
+    respx.post("http://orders/chat").mock(
+        return_value=httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=b"data: Hel\n\ndata: lo\n\n"
+        )
+    )
+
+    await backend("orders").post("/orders", json={"item": "pen"})
+    with pytest.raises(BackendError):
+        await backend("orders").get("/missing")
+    assert (await backend("orders").stream("POST", "/chat")).text == "Hello"
+
+    lines = [r.getMessage() for r in caplog.records if r.name == "staat_assist_mcp.http"]
+    assert lines[0].startswith("--> POST http://orders/orders headers [")
+    assert "authorization: Bearer obo-token" in lines[0] and lines[0].endswith('body {"item":"pen"}')
+    assert lines[1].startswith("<-- 201 POST http://orders/orders (") and lines[1].endswith('body {"id":1}')
+    assert lines[2].startswith("--> GET http://orders/missing") and lines[2].endswith("body (empty)")
+    assert lines[3].startswith("<-- 404 GET") and lines[3].endswith("body no such order")
+    assert lines[5].endswith("body (event stream, events follow)")
+    assert lines[6:] == ["<-- SSE event 1 message: Hel", "<-- SSE event 2 message: lo"]
+
+
+@respx.mock
+async def test_http_log_is_off_by_default(backends, caplog):
+    backends(open={"base_url": "http://open", "auth": "none"})
+    respx.get("http://open/ping").mock(return_value=httpx.Response(200, json=["pong"]))
+
+    await backend("open").get("/ping")
+
+    assert not [r for r in caplog.records if r.name == "staat_assist_mcp.http"]
 
 
 @respx.mock

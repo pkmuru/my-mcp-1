@@ -135,6 +135,7 @@ file, set `CONFIG_FILE=config.test.yaml`.
 | `cors_origins` | `[]` (off) | Browser origins allowed to call the server, or `["*"]`. Only needed for browser clients such as the MCP Inspector in "Direct" mode (`http://localhost:6274`) |
 | `log_level` | `INFO` | `DEBUG` adds tracebacks and `msal`/`httpx` logs |
 | `log_payloads` | `false` | Also log tool arguments/results and backend bodies. Contains client data |
+| `http_log` | `false` | Log every backend request and response in full: URL, all headers, body, status, time; SSE events one by one. **Tokens and client data included**: test environments only |
 | `ssl_verify` | `false` | TLS certificate verification for all outgoing calls. **Off by default**; set `true` where certificates are trusted |
 | `user_splits_file` | `user-splits.json` | Who may see which splits: a JSON list of `{"userid": "...", "splits": ["..."]}`. User ids match case-insensitively |
 | `gpn_claim` | `gpn` | Token claim that holds the financial advisor's GPN |
@@ -326,7 +327,9 @@ INFO [8834d974a5f7] staat_assist_mcp: tool=lookup_contacts ok in 97ms
 
 - `log_level: DEBUG`: tracebacks, where the backend token came from (cache or Entra ID), `msal` and `httpx` logs.
 - `log_payloads: true`: tool arguments/results, backend bodies and SSE events. Contains client data.
-- Tokens are never logged.
+- `http_log: true` (or `HTTP_LOG=true`): every backend request and response in full, logger
+  `staat_assist_mcp.http`, lines starting `-->` and `<--`. Bodies are cut at 32K characters.
+- Tokens are never logged, except by `http_log`, which logs the `Authorization` and API key headers as sent.
 
 | Symptom | Usual cause |
 |---|---|
