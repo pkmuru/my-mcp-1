@@ -105,8 +105,6 @@ def test_backends_come_from_the_file_and_the_environment_overrides_fields(
 @pytest.mark.parametrize(
     ("entry", "message"),
     [
-        ({"base_url": "http://x"}, "needs scopes"),
-        ({"base_url": "http://x", "auth": "api"}, "needs api_key"),
         ({"base_url": "http://x", "auth": "none", "scops": ["a"]}, "scops"),
         ({"base_url": "http://x", "auth": "basic"}, "auth"),
     ],

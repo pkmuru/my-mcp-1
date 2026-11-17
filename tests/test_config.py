@@ -1,20 +1,27 @@
-import pytest
-from pydantic import ValidationError
-
 from staat_assist_mcp.config import Settings
 
 
-def test_azure_settings_required_when_auth_enabled(monkeypatch):
+def test_missing_settings_are_listed_not_fatal(tmp_path, monkeypatch, no_backend_env):
+    (tmp_path / "config.yaml").write_text(
+        "backends:\n  orders: {base_url: http://o, auth: api}\n  lookup: {base_url: http://l}\n"
+    )
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("AZURE_CLIENT_SECRET")
-    with pytest.raises(ValidationError, match="AZURE_CLIENT_SECRET"):
-        Settings(_env_file=None)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.missing() == [
+        "AZURE_CLIENT_SECRET",
+        "BACKENDS__ORDERS__API_KEY",
+        "BACKENDS__LOOKUP__SCOPES",
+    ]
 
 
-def test_azure_settings_optional_when_auth_disabled(monkeypatch):
+def test_azure_settings_not_needed_when_auth_disabled(monkeypatch):
     for name in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"):
         monkeypatch.delenv(name)
     monkeypatch.setenv("AUTH_ENABLED", "false")
-    assert Settings(_env_file=None).auth_enabled is False
+    assert Settings(_env_file=None).missing() == []
 
 
 def test_settings_come_from_config_yaml_and_the_environment_overrides_them(

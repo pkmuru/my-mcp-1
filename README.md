@@ -192,8 +192,8 @@ BACKENDS__CONTACT_SEARCH__API_KEY=...
 BACKENDS__STAAT_INSIGHTS__SCOPES=api://1234/.default  # several: comma-separated
 ```
 
-A misspelled field, `obo` or `app` without scopes, or `api` without a key stops startup with a message naming
-the backend and the field.
+A misspelled field or an invalid value stops startup. A missing setting (`obo` or `app` without scopes, `api`
+without a key, an empty `AZURE_*`) does not: the server logs `not set: ...` with the variable names and starts.
 
 **Streaming formats (`sse`)**
 
@@ -330,6 +330,7 @@ INFO [8834d974a5f7] staat_assist_mcp: tool=lookup_contacts ok in 97ms
 | Tool error `AADSTS50013` / `500131` | The incoming token was not issued for this app, so it cannot be exchanged |
 | Tool error `AADSTS7000215` | Wrong `AZURE_CLIENT_SECRET` in `.env` |
 | `Backend 'x' is not configured` | No `x` entry under `backends:` in `config.yaml` |
-| Startup fails with a `backends` validation error | A misspelled field, `obo`/`app` without `scopes`, or `api` without `api_key` (set `BACKENDS__CONTACT_SEARCH__API_KEY` in `.env`); the message names the backend |
+| Warning `not set: ...` at startup | Those settings are empty and calls that need them fail. Secrets go in `.env` (copy `.env.example`), the rest in `config.yaml` |
+| Startup fails with a validation error | A misspelled field or an invalid value; the error names it |
 | `lookup_insight_document`: "token has no GPN claim" | The user's token for this server lacks the claim named by `gpn_claim`; add it to the token configuration of this server's app registration |
 | `lookup_contacts`: "not provisioned for any split" | The user id from the token is not in `user-splits.json` (restart after editing the file) |

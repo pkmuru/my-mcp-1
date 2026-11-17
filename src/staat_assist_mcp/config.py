@@ -9,7 +9,7 @@ import os
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -51,14 +51,6 @@ class BackendSettings(BaseModel):
     # that name their kind ({"type": "streaming", "value": ...}).
     sse: Literal["auto", "typed"] = "auto"
     sse_field: str | None = None  # "auto" only: the JSON property that holds the text, e.g. "delta"
-
-    @model_validator(mode="after")
-    def _check_auth(self) -> "BackendSettings":
-        if self.auth in ("obo", "app") and not self.scopes:
-            raise ValueError(f'auth "{self.auth}" needs scopes, e.g. [api://<backend-app-id>/.default]')
-        if self.auth == "api" and not self.api_key:
-            raise ValueError('auth "api" needs api_key (set BACKENDS__<NAME>__API_KEY in .env)')
-        return self
 
 
 class Settings(BaseSettings):
@@ -120,20 +112,21 @@ class Settings(BaseSettings):
         yaml_settings = YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file)
         return init_settings, env_settings, dotenv_settings, yaml_settings
 
-    @model_validator(mode="after")
-    def _require_azure_settings_when_auth_enabled(self) -> "Settings":
+    def missing(self) -> list[str]:
+        """Required settings that are empty, by environment variable name. The server warns and starts anyway."""
+        missing = []
         if self.auth_enabled:
-            missing = [
+            missing += [
                 name.upper()
                 for name in ("azure_tenant_id", "azure_client_id", "azure_client_secret")
                 if not getattr(self, name)
             ]
-            if missing:
-                raise ValueError(
-                    f"{', '.join(missing)} must be set: ids in config.yaml, the secret in .env "
-                    "(or auth_enabled: false for local dev)"
-                )
-        return self
+        for name, cfg in self.backends.items():
+            if cfg.auth in ("obo", "app") and not cfg.scopes:
+                missing.append(f"BACKENDS__{name.upper()}__SCOPES")
+            if cfg.auth == "api" and not cfg.api_key:
+                missing.append(f"BACKENDS__{name.upper()}__API_KEY")
+        return missing
 
     @property
     def authority(self) -> str:

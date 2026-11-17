@@ -27,8 +27,15 @@ def _describe_setup() -> list[str]:
 
 
 def main() -> None:
+    if missing := settings.missing():
+        log.warning(
+            "not set: %s. The server starts, but calls that need them fail. "
+            "Secrets go in .env (see .env.example), the rest in config.yaml.",
+            ", ".join(missing),
+        )
+
     # `staat-assist-mcp --check`: print the backends and tools, and exit.
-    # (A broken .env or config.yaml already stopped the import above with the reason.)
+    # (An invalid value or a misspelled field in config.yaml or .env already stopped the import above.)
     if "--check" in sys.argv[1:]:
         print("\n".join(_describe_setup()))
         return
