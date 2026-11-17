@@ -1,14 +1,15 @@
 """Configuration.
 
-Settings come from environment variables and an optional `.env` file. Backends are listed in
-`backends.yaml`; an environment variable overrides one field of one backend, e.g.
-BACKENDS__CIO__BASE_URL. pydantic-settings does the loading and merging.
+Settings are read from `config.yaml`; secrets come from the environment or a `.env` file.
+An environment variable overrides the file: PORT=9000, or BACKENDS__CIO__BASE_URL for one field of
+one backend. CONFIG_FILE names another YAML file. pydantic-settings does the loading and merging.
 """
 
+import os
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
 from pydantic_settings import (
     BaseSettings,
     NoDecode,
@@ -16,6 +17,15 @@ from pydantic_settings import (
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
+
+
+def _split_commas(value: object) -> object:
+    """A list arrives as a YAML list, or as "a,b" from an environment variable."""
+    return [item.strip() for item in value.split(",") if item.strip()] if isinstance(value, str) else value
+
+
+# NoDecode: pydantic-settings would otherwise expect JSON in the environment variable.
+StrList = Annotated[list[str], NoDecode, BeforeValidator(_split_commas)]
 
 
 class BackendSettings(BaseModel):
@@ -30,8 +40,8 @@ class BackendSettings(BaseModel):
     # passthrough: forward the user's token unchanged.
     # none: no Authorization header.
     auth: Literal["obo", "app", "api", "passthrough", "none"] = "obo"
-    scopes: Annotated[list[str], NoDecode] = []  # NoDecode: an environment variable gives "a,b", not JSON
-    api_key: str = ""  # a secret: set it with BACKENDS__<NAME>__API_KEY, not in backends.yaml
+    scopes: StrList = []
+    api_key: str = ""  # a secret: set it with BACKENDS__<NAME>__API_KEY in .env, not in config.yaml
     api_key_header: str = "X-Api-Key"
     headers: dict[str, str] = {}  # extra fixed headers sent with every call
     timeout_seconds: float = 30.0
@@ -42,25 +52,17 @@ class BackendSettings(BaseModel):
     sse: Literal["auto", "typed"] = "auto"
     sse_field: str | None = None  # "auto" only: the JSON property that holds the text, e.g. "delta"
 
-    @field_validator("scopes", mode="before")
-    @classmethod
-    def _split_scopes(cls, value: object) -> object:
-        """Environment variables carry a list as "a,b"."""
-        return [s.strip() for s in value.split(",") if s.strip()] if isinstance(value, str) else value
-
     @model_validator(mode="after")
     def _check_auth(self) -> "BackendSettings":
         if self.auth in ("obo", "app") and not self.scopes:
             raise ValueError(f'auth "{self.auth}" needs scopes, e.g. [api://<backend-app-id>/.default]')
         if self.auth == "api" and not self.api_key:
-            raise ValueError('auth "api" needs api_key (set BACKENDS__<NAME>__API_KEY)')
+            raise ValueError('auth "api" needs api_key (set BACKENDS__<NAME>__API_KEY in .env)')
         return self
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env", env_nested_delimiter="__", yaml_file="backends.yaml", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_nested_delimiter="__", extra="ignore")
 
     # AUTH_ENABLED=false turns off BOTH inbound token validation and the outbound OBO exchange
     # (backends are then called without an Authorization header). Local development only.
@@ -69,18 +71,18 @@ class Settings(BaseSettings):
     # Entra ID app registration of THIS MCP server; required when auth is enabled
     azure_tenant_id: str = ""
     azure_client_id: str = ""
-    azure_client_secret: str = ""
+    azure_client_secret: str = ""  # a secret: AZURE_CLIENT_SECRET in .env
     azure_authority_host: str = "login.microsoftonline.com"
-    # Comma-separated short scope names from "Expose an API", e.g. "access_as_user"
-    required_scopes: str = "access_as_user"
+    # Short scope names from "Expose an API" that the user's token must carry
+    required_scopes: StrList = ["access_as_user"]
 
     # HTTP server
     host: str = "0.0.0.0"
     port: int = 8000
     base_url: str = "http://localhost:8000"
-    # Browser origins allowed to call the server directly (comma-separated, or "*"). Empty = CORS off.
+    # Browser origins allowed to call the server directly (or ["*"]). Empty = CORS off.
     # Only needed for browser-based clients such as the MCP Inspector in "Direct" connection mode.
-    cors_origins: str = ""
+    cors_origins: StrList = []
 
     # Diagnostics
     log_level: str = "INFO"
@@ -101,7 +103,7 @@ class Settings(BaseSettings):
     dev_user_id: str = ""
     dev_gpn: str = ""
 
-    # From backends.yaml, overridden per field by BACKENDS__<NAME>__<FIELD>.
+    # The `backends:` section of config.yaml, overridden per field by BACKENDS__<NAME>__<FIELD>.
     backends: dict[str, BackendSettings] = {}
 
     @classmethod
@@ -113,8 +115,10 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # Earlier sources win: environment, then .env, then backends.yaml.
-        return init_settings, env_settings, dotenv_settings, YamlConfigSettingsSource(settings_cls)
+        # Earlier sources win: environment, then .env, then config.yaml.
+        yaml_file = os.environ.get("CONFIG_FILE", "config.yaml")
+        yaml_settings = YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file)
+        return init_settings, env_settings, dotenv_settings, yaml_settings
 
     @model_validator(mode="after")
     def _require_azure_settings_when_auth_enabled(self) -> "Settings":
@@ -126,17 +130,10 @@ class Settings(BaseSettings):
             ]
             if missing:
                 raise ValueError(
-                    f"{', '.join(missing)} must be set (or set AUTH_ENABLED=false for local dev)"
+                    f"{', '.join(missing)} must be set: ids in config.yaml, the secret in .env "
+                    "(or auth_enabled: false for local dev)"
                 )
         return self
-
-    @property
-    def required_scope_list(self) -> list[str]:
-        return [s.strip() for s in self.required_scopes.split(",") if s.strip()]
-
-    @property
-    def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def authority(self) -> str:

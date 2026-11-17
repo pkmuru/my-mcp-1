@@ -1,0 +1,88 @@
+# Settings of the MCP server. Read once at startup: restart the server after a change.
+#
+# Secrets are NOT in this file. They go in .env (see .env.example):
+#   AZURE_CLIENT_SECRET, BACKENDS__CONTACT_SEARCH__API_KEY
+#
+# Any setting here can be overridden by an environment variable with the same name in capitals,
+# e.g. PORT=9000 or AUTH_ENABLED=false. For a backend field: BACKENDS__<NAME>__<FIELD>,
+# e.g. BACKENDS__CIO__BASE_URL=https://cio.test.internal
+# To use another file: CONFIG_FILE=config.test.yaml
+#
+# All settings with their defaults: src/staat_assist_mcp/config.py
+
+# --- Sign-in: the Entra ID app registration of this server ---
+# false = no token validation and no token exchange (backends are called without Authorization).
+# Local development only.
+auth_enabled: true
+azure_tenant_id: 00000000-0000-0000-0000-000000000000
+azure_client_id: 00000000-0000-0000-0000-000000000000
+# Scope(s) the user's token must carry: the short names from "Expose an API".
+required_scopes: [access_as_user]
+
+# --- HTTP server ---
+host: 0.0.0.0
+port: 8000
+base_url: http://localhost:8000
+# Browser origins allowed to call the server directly, or ["*"]. Empty = CORS off.
+# MCP Inspector in "Direct" mode: [http://localhost:6274]
+cors_origins: []
+
+# --- Diagnostics ---
+log_level: INFO       # DEBUG also turns on msal/httpx logs
+log_payloads: false   # true logs tool arguments/results and backend bodies (contains client data)
+ssl_verify: false     # TLS verification for outgoing calls (backends, Entra ID)
+
+# --- Lookup tools ---
+# Who may see which splits: a JSON list of {"userid": "...", "splits": ["..."]}.
+user_splits_file: user-splits.json
+# Token claim that holds the financial advisor's GPN.
+gpn_claim: gpn
+# How this application identifies itself to STAAT insights.
+insights_product: FA_PORTAL
+# Stand-in user, only used when auth_enabled is false:
+# dev_user_id: jane@example.com
+# dev_gpn: "12345678"
+
+# --- Backends: the services the tools call, and how each call is authorized ---
+#
+#   base_url         absolute URL; tool paths are appended to it
+#   auth             obo          exchange the user's token for one with `scopes` (default)
+#                    app          this server's own token for `scopes`; the backend does not see the user
+#                    api          send an API key: BACKENDS__<NAME>__API_KEY in .env
+#                                 (header name: api_key_header, default X-Api-Key)
+#                    passthrough  forward the user's token unchanged
+#                    none         no Authorization header
+#   scopes           obo and app, e.g. [api://<backend-app-id>/.default]
+#   headers          extra fixed headers on every call
+#   timeout_seconds  default 30
+#   sse              how SSE events are read: auto (default) or typed, see src/staat_assist_mcp/sse.py
+backends:
+  # Azure AI Search, the contact index. Used by lookup_contacts.
+  # The URL ends with the index name; the query key is BACKENDS__CONTACT_SEARCH__API_KEY in .env.
+  contact_search:
+    base_url: https://search-service.search.windows.net/indexes/index-name
+    auth: api
+    api_key_header: api-key
+
+  # STAAT insights. Used by lookup_insight_document.
+  # auth: app = this server's own token; use obo if STAAT insights expects the user's token.
+  staat_insights:
+    base_url: https://staat-insights.example.internal/insights-api/v2
+    auth: app
+    scopes: [api://staat-insights-app-id/.default]
+
+  # CIO assistant (SSE). Used by ask_cio.
+  cio:
+    base_url: https://cio.example.internal
+    auth: obo
+    scopes: [api://cio-app-id/.default]
+    sse: auto
+    timeout_seconds: 60
+
+  # The other auth modes:
+  # orders:
+  #   base_url: https://orders.example.internal
+  #   auth: api            # plus BACKENDS__ORDERS__API_KEY=... in .env
+  # legacy:
+  #   base_url: https://legacy.example.internal
+  #   auth: passthrough

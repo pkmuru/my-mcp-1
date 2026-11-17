@@ -1,4 +1,4 @@
-"""How a backend's SSE events become text. Chosen per backend with `sse:` in backends.yaml.
+"""How a backend's SSE events become text. Chosen per backend with `sse:` in config.yaml.
 
 auto   plain text, or JSON with the text under content/text/delta/answer/message/value
        (or under the backend's `sseField`). "[DONE]" and events without text are skipped.

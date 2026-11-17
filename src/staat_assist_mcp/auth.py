@@ -40,7 +40,7 @@ def build_auth(settings: Settings) -> RemoteAuthProvider:
         ssl_verify=settings.ssl_verify,
         client_id=settings.azure_client_id,
         tenant_id=settings.azure_tenant_id,
-        required_scopes=settings.required_scope_list or None,
+        required_scopes=settings.required_scopes or None,
         base_authority=settings.azure_authority_host,
     )
     return RemoteAuthProvider(

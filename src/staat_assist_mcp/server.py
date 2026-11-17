@@ -15,7 +15,7 @@ log = logging.getLogger("staat_assist_mcp")
 
 def _describe_setup() -> list[str]:
     """What the server exposes: every backend and every tool, one line each."""
-    lines = ["backends (backends.yaml, BACKENDS__* overrides):"]
+    lines = ["backends (config.yaml, BACKENDS__* overrides):"]
     for name, cfg in sorted(settings.backends.items()):
         scopes = f" scopes={cfg.scopes}" if cfg.scopes else ""
         lines.append(f"  {name:<14} {cfg.auth:<11} {cfg.base_url}{scopes}")
@@ -28,7 +28,7 @@ def _describe_setup() -> list[str]:
 
 def main() -> None:
     # `staat-assist-mcp --check`: print the backends and tools, and exit.
-    # (A broken .env or backends.yaml already stopped the import above with the reason.)
+    # (A broken .env or config.yaml already stopped the import above with the reason.)
     if "--check" in sys.argv[1:]:
         print("\n".join(_describe_setup()))
         return
@@ -45,18 +45,18 @@ def main() -> None:
         settings.port,
         settings.azure_tenant_id,
         settings.azure_client_id,
-        settings.required_scope_list,
+        settings.required_scopes,
         settings.log_level,
     )
     for line in _describe_setup():
         log.info(line)
     middleware = []
-    if settings.cors_origin_list:
-        log.info("CORS enabled for origins=%s", settings.cors_origin_list)
+    if settings.cors_origins:
+        log.info("CORS enabled for origins=%s", settings.cors_origins)
         middleware.append(
             Middleware(
                 CORSMiddleware,
-                allow_origins=settings.cors_origin_list,
+                allow_origins=settings.cors_origins,
                 allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
                 allow_headers=["*"],
                 expose_headers=["mcp-session-id", "www-authenticate"],

@@ -1,7 +1,6 @@
-"""Backend auth modes, SSE formats and backends.yaml loading."""
+"""Backend auth modes, SSE formats and config.yaml loading."""
 
 import json
-import os
 
 import httpx
 import pytest
@@ -82,15 +81,15 @@ async def test_typed_sse_collects_answer_and_followups(backends, fake_obo):
     assert fake_obo == ["api://chat/.default"]
 
 
-def test_backends_come_from_the_file_and_the_environment_overrides_fields(tmp_path, monkeypatch):
-    (tmp_path / "backends.yaml").write_text(
+def test_backends_come_from_the_file_and_the_environment_overrides_fields(
+    tmp_path, monkeypatch, no_backend_env
+):
+    (tmp_path / "config.yaml").write_text(
         "backends:\n"
         "  lookup: {base_url: http://file, scopes: [api://file/.default], timeout_seconds: 5}\n"
         "  orders: {base_url: http://orders, auth: api}\n"
     )
     monkeypatch.chdir(tmp_path)
-    for name in [name for name in os.environ if name.startswith("BACKENDS__")]:
-        monkeypatch.delenv(name)  # the overrides conftest.py sets for the repository's backends.yaml
     monkeypatch.setenv("BACKENDS__LOOKUP__BASE_URL", "http://env")
     monkeypatch.setenv("BACKENDS__LOOKUP__SCOPES", "api://a/.default, api://b/.default")
     monkeypatch.setenv("BACKENDS__ORDERS__API_KEY", "secret")

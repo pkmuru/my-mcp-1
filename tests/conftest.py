@@ -9,7 +9,7 @@ os.environ.update(
         "LOG_LEVEL": "DEBUG",
         "LOG_PAYLOADS": "true",
         "SSL_VERIFY": "false",
-        # The repository's backends.yaml is loaded; only the URLs and scopes are overridden.
+        # The repository's config.yaml is loaded; only the URLs and scopes are overridden.
         "BACKENDS__CONTACT_SEARCH__BASE_URL": "http://search/indexes/contacts",
         "BACKENDS__CONTACT_SEARCH__API_KEY": "search-key",
         "BACKENDS__STAAT_INSIGHTS__BASE_URL": "http://insights/v2",
@@ -22,6 +22,13 @@ os.environ.update(
 import pytest
 
 from staat_assist_mcp import auth
+
+
+@pytest.fixture
+def no_backend_env(monkeypatch):
+    """Remove the BACKENDS__* overrides above, for tests that load their own config.yaml."""
+    for name in [name for name in os.environ if name.startswith("BACKENDS__")]:
+        monkeypatch.delenv(name)
 
 
 @pytest.fixture

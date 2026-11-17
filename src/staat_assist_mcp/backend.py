@@ -3,7 +3,7 @@
     data = await backend("lookup").post("/contact-lookup/search", json={"text": "james"})
     answer = await backend("cio").stream("POST", "/cio/chat/streaming", json={...}, ctx=ctx)
 
-Each call is authorized the way the backend's `auth` says (backends.yaml), is logged with timing,
+Each call is authorized the way the backend's `auth` says (config.yaml), is logged with timing,
 and maps failures to ToolError so the agent (and the developer) sees what went wrong.
 """
 
@@ -225,12 +225,12 @@ class BackendClient:
 
 
 def backend(name: str) -> BackendClient:
-    """Client for a backend from backends.yaml."""
+    """Client for a backend from config.yaml."""
     backends = get_settings().backends
     cfg = backends.get(name.lower())
     if cfg is None:
         raise ToolError(
-            f"Backend '{name}' is not configured. Add it to backends.yaml "
+            f"Backend '{name}' is not configured. Add it to config.yaml "
             f"(configured: {sorted(backends) or 'none'})."
         )
     return BackendClient(name.lower(), cfg)

@@ -8,14 +8,14 @@ directly. Built with [FastMCP](https://gofastmcp.com).
 agent ──user token──▶ staat-assist-mcp ──▶ Azure AI Search   (contact index)
         (MCP over HTTP)   validates the token, ──▶ STAAT insights    (insight documents)
                           runs the tool,       ──▶ CIO service       (streamed answers)
-                          calls the backend        each with its own URL and auth, see backends.yaml
+                          calls the backend        each with its own URL and auth, see config.yaml
 ```
 
 It replaces the earlier .NET lookup service (`app-lookup-api`) and proxy (`app-proxy`): the contact
 search, the split access check and the insight document conversion now live in the lookup tools.
 
 - **Auth**: every request carries the user's Entra ID access token for this server's app registration.
-  Each backend is then called the way `backends.yaml` says: with a token exchanged for the user
+  Each backend is then called the way `config.yaml` says: with a token exchanged for the user
   (On-Behalf-Of, "OBO"), this server's own token, an API key, or the user's token as it is.
 - **Transport**: streamable HTTP at `/mcp` (stateless). Health check at `/health`.
 - **Streaming**: when a backend streams its answer (SSE), each chunk is passed on to the agent as it
@@ -38,7 +38,8 @@ search, the split access check and the insight document conversion now live in t
 Requirements: [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and the dependencies).
 
 ```bash
-cp .env.example .env            # fill in the Entra ID values and the backend URLs and scopes
+cp .env.example .env            # the two secrets: client secret and search key
+# edit config.yaml: tenant id, client id, backend URLs and scopes
 uv sync                         # install dependencies
 uv run staat-assist-mcp         # serves http://localhost:8000/mcp
 ```
@@ -51,7 +52,7 @@ uv run pytest                     # tests (no network, no Entra ID needed)
 uv run ruff check && uv run ruff format   # lint and format
 ```
 
-**Without Entra ID (local only):** set `AUTH_ENABLED=false` in `.env`. The server then accepts
+**Without Entra ID (local only):** set `auth_enabled: false` in `config.yaml` (or `AUTH_ENABLED=false` in `.env`). The server then accepts
 requests without a token and calls `obo` and `passthrough` backends without an `Authorization`
 header, so it only works with mock or open backends. Never set it in a deployed environment.
 
@@ -69,7 +70,7 @@ How the lookup tools decide what a user may see:
 - **Contacts**: the user id from the token (`preferred_username`, `upn` or `email`) is looked up in
   `user-splits.json`. The search only returns contacts with an account in one of the user's splits,
   and each contact's accounts are limited to those splits. A user without splits gets an error.
-- **Insight documents**: the financial advisor's GPN is read from the token claim named by `GPN_CLAIM`
+- **Insight documents**: the financial advisor's GPN is read from the token claim named by `gpn_claim`
   and sent to STAAT insights, which authorizes on it. A token without that claim gets an error.
 
 Open points:
@@ -81,8 +82,8 @@ Open points:
 ## Project layout
 
 ```
-.env                          settings for this environment (copy of .env.example, not committed)
-backends.yaml                 the backends the tools call: URL, auth mode, scopes
+config.yaml                   all settings: sign-in, server, logging, lookup, and the backends
+.env                          secrets only (copy of .env.example, not committed)
 user-splits.json              which user may see which splits (contact lookup)
 src/staat_assist_mcp/
   server.py                   entry point: starts the HTTP server
@@ -108,30 +109,34 @@ A tool call flows through three files: the tool function in `tools/` calls `back
 
 ## Configuration
 
-Two places, both read at startup (restart the server after a change):
+Read once at startup (restart the server after a change):
 
-- **`.env`**: settings of this server and anything secret or environment-specific.
-- **`backends.yaml`**: the list of backends. Committed, no secrets.
+- **`config.yaml`**: every setting. Committed, no secrets.
+- **`.env`**: the secrets, `AZURE_CLIENT_SECRET` and `BACKENDS__CONTACT_SEARCH__API_KEY`. Not committed.
 
-### Server settings (`.env`)
+An environment variable (or a line in `.env`) overrides `config.yaml`: the setting's name in capitals,
+e.g. `PORT=9000` or `AUTH_ENABLED=false`; lists are comma-separated. To give an environment its own
+file, set `CONFIG_FILE=config.test.yaml`.
 
-| Variable | Default | Meaning |
+### Server settings (`config.yaml`)
+
+| Setting | Default | Meaning |
 |---|---|---|
-| `AUTH_ENABLED` | `true` | `false` turns off token validation and token exchange. Local development only |
-| `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` | required | Entra ID app registration of this server |
-| `REQUIRED_SCOPES` | `access_as_user` | Scope(s) the user's token must carry, comma-separated |
-| `HOST`, `PORT` | `0.0.0.0`, `8000` | Where the server listens |
-| `BASE_URL` | `http://localhost:8000` | Public URL of this server |
-| `CORS_ORIGINS` | empty (off) | Browser origins allowed to call the server, comma-separated or `*`. Only needed for browser clients such as the MCP Inspector in "Direct" mode (`http://localhost:6274`) |
-| `LOG_LEVEL` | `INFO` | `DEBUG` adds tracebacks and `msal`/`httpx` logs |
-| `LOG_PAYLOADS` | `false` | Also log tool arguments/results and backend bodies. Contains client data |
-| `SSL_VERIFY` | `false` | TLS certificate verification for all outgoing calls. **Off by default**; set `true` where certificates are trusted |
-| `USER_SPLITS_FILE` | `user-splits.json` | Who may see which splits: a JSON list of `{"userid": "...", "splits": ["..."]}`. User ids match case-insensitively |
-| `GPN_CLAIM` | `gpn` | Token claim that holds the financial advisor's GPN |
-| `INSIGHTS_PRODUCT` | `FA_PORTAL` | How this app identifies itself to STAAT insights |
-| `DEV_USER_ID`, `DEV_GPN` | empty | Stand-in user for the lookup tools when `AUTH_ENABLED=false` |
+| `auth_enabled` | `true` | `false` turns off token validation and token exchange. Local development only |
+| `azure_tenant_id`, `azure_client_id` | required | Entra ID app registration of this server. Its secret is `AZURE_CLIENT_SECRET` in `.env` |
+| `required_scopes` | `[access_as_user]` | Scope(s) the user's token must carry |
+| `host`, `port` | `0.0.0.0`, `8000` | Where the server listens |
+| `base_url` | `http://localhost:8000` | Public URL of this server |
+| `cors_origins` | `[]` (off) | Browser origins allowed to call the server, or `["*"]`. Only needed for browser clients such as the MCP Inspector in "Direct" mode (`http://localhost:6274`) |
+| `log_level` | `INFO` | `DEBUG` adds tracebacks and `msal`/`httpx` logs |
+| `log_payloads` | `false` | Also log tool arguments/results and backend bodies. Contains client data |
+| `ssl_verify` | `false` | TLS certificate verification for all outgoing calls. **Off by default**; set `true` where certificates are trusted |
+| `user_splits_file` | `user-splits.json` | Who may see which splits: a JSON list of `{"userid": "...", "splits": ["..."]}`. User ids match case-insensitively |
+| `gpn_claim` | `gpn` | Token claim that holds the financial advisor's GPN |
+| `insights_product` | `FA_PORTAL` | How this app identifies itself to STAAT insights |
+| `dev_user_id`, `dev_gpn` | empty | Stand-in user for the lookup tools when `auth_enabled` is `false` |
 
-### Backends (`backends.yaml`)
+### Backends (`backends:` in `config.yaml`)
 
 One entry per backend: where it is and how calls to it are authorized.
 
@@ -159,7 +164,7 @@ backends:
 | `base_url` | required | Absolute URL; tool paths are appended to it |
 | `auth` | `obo` | How calls are authorized, see below |
 | `scopes` | `[]` | For `obo` and `app`: the scope(s) of the backend API, e.g. `api://<backend-app-id>/.default` |
-| `api_key` | empty | For `api`: the key. Set it in `.env`, not in the file |
+| `api_key` | empty | For `api`: the key. Set it in `.env` as `BACKENDS__<NAME>__API_KEY`, not in the file |
 | `api_key_header` | `X-Api-Key` | For `api`: the header the key is sent in |
 | `headers` | `{}` | Extra fixed headers on every call |
 | `timeout_seconds` | `30` | Timeout of one call |
@@ -177,13 +182,12 @@ backends:
 | `passthrough` | The user's own token, unchanged. Only for backends that accept tokens issued for this server |
 | `none` | No `Authorization` header |
 
-**Overriding per environment**
+**Overriding one backend field**
 
 Any field of any backend can be set in the environment or `.env` as `BACKENDS__<NAME>__<FIELD>`. This
-is how URLs and scopes differ between environments, and where API keys go:
+is where API keys go, and one way to change a URL or scope for a single environment:
 
 ```bash
-BACKENDS__CONTACT_SEARCH__BASE_URL=https://my-search.search.windows.net/indexes/contacts
 BACKENDS__CONTACT_SEARCH__API_KEY=...
 BACKENDS__STAAT_INSIGHTS__SCOPES=api://1234/.default  # several: comma-separated
 ```
@@ -227,7 +231,7 @@ What each part does:
 - **Function name**: the tool name the agent calls.
 - **Docstring**: what the LLM reads to decide when to call the tool. Say what it returns and when to use it.
 - **Type hints and `Field(description=...)`**: become the input schema; FastMCP validates the arguments.
-- **`backend("orders")`**: the `orders` entry in `backends.yaml`. It adds the token or API key, logs the
+- **`backend("orders")`**: the `orders` entry under `backends:` in `config.yaml`. It adds the token or API key, logs the
   call and turns HTTP errors into tool errors the agent can read. Use `.get(path, params=...)` and
   `.post(path, json=...)`.
 - **`tags`**: the group. Tools of one feature share a folder, a name prefix and a tag, like
@@ -250,8 +254,8 @@ backend. Copy one of the existing tests.
 
 ## Add a backend
 
-1. Add an entry to `backends.yaml` (see [Backends](#backends-backendsyaml)).
-2. Put environment-specific values and secrets in `.env` as `BACKENDS__<NAME>__...`.
+1. Add an entry under `backends:` in `config.yaml` (see [Backends](#backends-backends-in-configyaml)).
+2. If it uses `auth: api`, put the key in `.env` as `BACKENDS__<NAME>__API_KEY`.
 3. In Entra ID, for `auth: obo` give this server's app registration a delegated permission on the
    backend API and grant admin consent; for `auth: app` an application permission.
 4. Run `uv run staat-assist-mcp --check` to see that it is picked up.
@@ -314,18 +318,18 @@ INFO [8834d974a5f7] staat_assist_mcp.backend: backend=contact_search <- 200 POST
 INFO [8834d974a5f7] staat_assist_mcp: tool=lookup_contacts ok in 97ms
 ```
 
-- `LOG_LEVEL=DEBUG`: tracebacks, where the backend token came from (cache or Entra ID), `msal` and `httpx` logs.
-- `LOG_PAYLOADS=true`: tool arguments/results, backend bodies and SSE events. Contains client data.
+- `log_level: DEBUG`: tracebacks, where the backend token came from (cache or Entra ID), `msal` and `httpx` logs.
+- `log_payloads: true`: tool arguments/results, backend bodies and SSE events. Contains client data.
 - Tokens are never logged.
 
 | Symptom | Usual cause |
 |---|---|
 | 401 on every call | The token's `aud` is not this app (`<client-id>` or `api://<client-id>`), or it is a v1 token (`iss` = `sts.windows.net`); set `accessTokenAcceptedVersion: 2` in the app manifest |
-| 401/403 with scope challenge | The token lacks the `REQUIRED_SCOPES` value in `scp` |
+| 401/403 with scope challenge | The token lacks a `required_scopes` value in `scp` |
 | Tool error `AADSTS65001` | Admin consent missing for this app on the backend API scope |
 | Tool error `AADSTS50013` / `500131` | The incoming token was not issued for this app, so it cannot be exchanged |
-| Tool error `AADSTS7000215` | Wrong `AZURE_CLIENT_SECRET` |
-| `Backend 'x' is not configured` | No `x` entry in `backends.yaml` |
-| Startup fails with a `backends` validation error | A misspelled field, `obo`/`app` without `scopes`, or `api` without `api_key` (set `BACKENDS__CONTACT_SEARCH__API_KEY`); the message names the backend |
-| `lookup_insight_document`: "token has no GPN claim" | The user's token for this server lacks the claim named by `GPN_CLAIM`; add it to the token configuration of this server's app registration |
+| Tool error `AADSTS7000215` | Wrong `AZURE_CLIENT_SECRET` in `.env` |
+| `Backend 'x' is not configured` | No `x` entry under `backends:` in `config.yaml` |
+| Startup fails with a `backends` validation error | A misspelled field, `obo`/`app` without `scopes`, or `api` without `api_key` (set `BACKENDS__CONTACT_SEARCH__API_KEY` in `.env`); the message names the backend |
+| `lookup_insight_document`: "token has no GPN claim" | The user's token for this server lacks the claim named by `gpn_claim`; add it to the token configuration of this server's app registration |
 | `lookup_contacts`: "not provisioned for any split" | The user id from the token is not in `user-splits.json` (restart after editing the file) |
