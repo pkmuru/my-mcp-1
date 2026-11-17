@@ -192,14 +192,151 @@ async def test_lookup_insight_document_not_found(signed_in, relationship, docume
             await client.call_tool("lookup_insight_document", {"client_id": "CL1"})
 
 
-async def test_lookup_insight_document_needs_a_gpn(signed_in, monkeypatch):
+@pytest.mark.parametrize("tool", ["lookup_insight_document", "lookup_relationship_id"])
+async def test_insight_lookups_need_a_gpn(signed_in, monkeypatch, tool):
     from staat_assist_mcp import auth
     from staat_assist_mcp.tools.lookup import insights
 
     monkeypatch.setattr(insights, "current_user", lambda: auth.User(id="jane@example.com", gpn=None))
     async with Client(mcp) as client:
         with pytest.raises(ToolError, match="no GPN claim"):
-            await client.call_tool("lookup_insight_document", {"client_id": "CL1"})
+            await client.call_tool(tool, {"client_id": "CL1", "gpn": "  "})
+
+
+@respx.mock
+async def test_lookup_relationship_id(signed_in, caplog):
+    relationship = respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text=" 0012345 \n"))
+    document = respx.post(DOCUMENT_URL)
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_relationship_id", {"client_id": " CL1 "})
+
+    assert result.data == "0012345"
+    request = relationship.calls.last.request
+    assert json.loads(request.content) == {
+        "fa-gpn": "12345678",
+        "client-id": "CL1",
+        "productType": "FA_PORTAL",
+    }
+    assert request.headers["x_user_gpn"] == "12345678" and request.headers["product"] == "FA_PORTAL"
+    assert not document.called
+    assert "Relationship id lookup by Jane@Example.com for client CL1 (GPN from token): found" in caplog.text
+
+
+@respx.mock
+@pytest.mark.parametrize("response", [httpx.Response(404), httpx.Response(200, text=" ")])
+async def test_lookup_relationship_id_not_found(signed_in, response):
+    respx.post(RELATIONSHIP_URL).mock(return_value=response)
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="no relationship"):
+            await client.call_tool("lookup_relationship_id", {"client_id": "CL1"})
+
+
+@respx.mock
+async def test_insight_lookups_send_the_gpn_argument_instead_of_the_tokens(signed_in, caplog):
+    relationship = respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text="REL-9"))
+    document = respx.post(DOCUMENT_URL).mock(return_value=httpx.Response(200, text="<p>Pack</p>"))
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_insight_document", {"client_id": "CL1", "gpn": " 99999999 "})
+
+    assert result.data == "Pack"
+    for route in (relationship, document):
+        request = route.calls.last.request
+        assert json.loads(request.content)["fa-gpn"] == "99999999"
+        assert request.headers["x_user_gpn"] == "99999999"
+    assert "(GPN from argument)" in caplog.text
+    assert (
+        "Insight document lookup by Jane@Example.com for relationship REL-9 as markdown: found, 4 chars"
+        in (caplog.text)
+    )
+
+
+@respx.mock
+async def test_lookup_insight_document_as_text_from_html(signed_in):
+    respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text="REL-9"))
+    respx.post(DOCUMENT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            text="<html><head><title>x</title></head><body><!-- note --><style>p{color:red}</style>"
+            "<h2>Gavinski  household</h2><p>Line one<br>line&nbsp;two</p>"
+            "<table><tr><th>Risk</th><td>High<br>for now</td></tr><tr><td>Goals</td><td>Retire</td></tr></table>"
+            "<ul><li>A</li><li>B</li></ul></body></html>",
+        )
+    )
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_insight_document", {"client_id": "CL1", "format": "text"})
+
+    assert result.data == (
+        "Gavinski household\n\nLine one\nline two\n\nRisk\tHigh for now\nGoals\tRetire\n\nA\nB"
+    )
+
+
+@respx.mock
+async def test_lookup_insight_document_as_text_from_json(signed_in):
+    respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text="REL-9"))
+    respx.post(DOCUMENT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            text='[{"leadClientName": "James Gavinski", "netWorth": 1000.50, "active": true, "spouse": null,'
+            ' "goals": ["Retire", null], "accounts": [{"id": "A1"}, {"id": "A2"}],'
+            ' "notes": "<p>VIP</p><p>Call monthly</p>"}]',
+        )
+    )
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_insight_document", {"client_id": "CL1", "format": "text"})
+
+    assert result.data == (
+        "James Gavinski\n\n"
+        "leadClientName: James Gavinski\nnetWorth: 1000.50\nactive: true\n"
+        "goals:\n  - Retire\n"
+        "accounts:\n  id: A1\n\n  id: A2\n"
+        "notes:\n  VIP\n  \n  Call monthly\n"
+    )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (
+            httpx.Response(200, text="<h1>Pack</h1><p style='x'>Text</p>"),
+            "<h1>Pack</h1><p style='x'>Text</p>",
+        ),
+        (httpx.Response(200, json="<h1>Pack</h1>"), "<h1>Pack</h1>"),
+        (
+            httpx.Response(200, text='{"leadClientName": "J", "netWorth": 1.50}'),
+            '{"leadClientName": "J", "netWorth": 1.50}',
+        ),
+    ],
+)
+async def test_lookup_insight_document_as_html_is_the_original(signed_in, response, expected):
+    respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text="REL-9"))
+    respx.post(DOCUMENT_URL).mock(return_value=response)
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_insight_document", {"client_id": "CL1", "format": "html"})
+
+    assert result.data == expected
+
+
+@respx.mock
+async def test_lookup_insight_document_keeps_numbers_as_written(signed_in):
+    respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text="REL-9"))
+    respx.post(DOCUMENT_URL).mock(
+        return_value=httpx.Response(200, text='{"leadClientName": "J", "netWorth": 1000.50, "count": 3}')
+    )
+    async with Client(mcp) as client:
+        result = await client.call_tool("lookup_insight_document", {"client_id": "CL1"})
+
+    assert "- **netWorth:** 1000.50\n- **count:** 3" in result.data
+
+
+@respx.mock
+@pytest.mark.parametrize("fmt", ["text", "html"])
+async def test_lookup_insight_document_empty_json_is_not_found_in_every_format(signed_in, fmt):
+    respx.post(RELATIONSHIP_URL).mock(return_value=httpx.Response(200, text="REL-9"))
+    respx.post(DOCUMENT_URL).mock(return_value=httpx.Response(200, json=[]))
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="no document"):
+            await client.call_tool("lookup_insight_document", {"client_id": "CL1", "format": fmt})
 
 
 @respx.mock
@@ -225,7 +362,13 @@ async def test_ask_cio_streams_progress_and_returns_full_answer(fake_obo):
 async def test_tools_are_listed():
     async with Client(mcp) as client:
         names = {tool.name for tool in await client.list_tools()}
-    assert {"lookup_contacts", "lookup_insight_document", "ask_cio", "placeholder_tool"} <= names
+    assert {
+        "lookup_contacts",
+        "lookup_relationship_id",
+        "lookup_insight_document",
+        "ask_cio",
+        "placeholder_tool",
+    } <= names
     assert "lookup_client" not in names
 
 

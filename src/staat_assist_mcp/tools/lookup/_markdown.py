@@ -10,6 +10,11 @@ _TAG = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(\s[^>]*)?/?>")
 _BLANK_LINES = re.compile(r"\n{3,}")
 
 
+def looks_like_html(value: str) -> bool:
+    """True when the value holds at least one HTML tag, so it is worth running through a converter."""
+    return _TAG.search(value) is not None
+
+
 def html_to_markdown(html: str) -> str:
     """Headings, lists, emphasis and pipe tables. Styles, scripts and comments are dropped."""
     soup = BeautifulSoup(html, "html.parser")
@@ -57,5 +62,5 @@ def _scalar(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return html_to_markdown(value) if _TAG.search(value) else value.strip()
+        return html_to_markdown(value) if looks_like_html(value) else value.strip()
     return str(value)

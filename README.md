@@ -61,7 +61,8 @@ header, so it only works with mock or open backends. Never set it in a deployed 
 | Group | Tool | What it does | Backend |
 |---|---|---|---|
 | lookup | `lookup_contacts` | Search the clients the user may see, by free text and/or client id, first/last name, phone, area code | `contact_search`: Azure AI Search, `POST /docs/search` |
-| lookup | `lookup_insight_document` | One client's insight document (retention pack), as markdown | `staat_insights`: `POST /getRelationshipIdByClientId`, then `POST /insightsByRelationshipId` |
+| lookup | `lookup_relationship_id` | The relationship id (ACE id) STAAT insights holds for one client | `staat_insights`: `POST /getRelationshipIdByClientId` |
+| lookup | `lookup_insight_document` | One client's insight document (retention pack). `format`: `markdown` (default), `text` (smallest) or `html` (original) | `staat_insights`: `POST /getRelationshipIdByClientId`, then `POST /insightsByRelationshipId` |
 | cio | `ask_cio` | Answer a CIO (Chief Investment Office) question; streamed | `cio`: `POST /cio/chat/streaming` |
 | | `placeholder_tool` | Does nothing; a template to copy | none |
 
@@ -70,8 +71,11 @@ How the lookup tools decide what a user may see:
 - **Contacts**: the user id from the token (`preferred_username`, `upn` or `email`) is looked up in
   `user-splits.json`. The search only returns contacts with an account in one of the user's splits,
   and each contact's accounts are limited to those splits. A user without splits gets an error.
-- **Insight documents**: the financial advisor's GPN is read from the token claim named by `gpn_claim`
-  and sent to STAAT insights, which authorizes on it. A token without that claim gets an error.
+- **Relationship ids and insight documents**: the financial advisor's GPN is sent to STAAT insights,
+  which authorizes on it. It is the tool's optional `gpn` argument, or else the token claim named by
+  `gpn_claim`; with neither, the tool fails. The argument lets the caller name any GPN, so STAAT insights'
+  own check is what stops a user from reading another advisor's clients. Each lookup logs the user, the
+  client or relationship id, where the GPN came from, the outcome and the time taken.
 
 Open points:
 
@@ -96,8 +100,9 @@ src/staat_assist_mcp/
   tools/                      the tools, one module per feature
     lookup/contacts.py          lookup_contacts
     lookup/_contact_search.py     builds the search request, maps index fields to readable names
-    lookup/insights.py          lookup_insight_document
+    lookup/insights.py          lookup_relationship_id, lookup_insight_document
     lookup/_markdown.py           converts the document (HTML or JSON) to markdown
+    lookup/_text.py               converts the document (HTML or JSON) to plain text
     lookup/_common.py           split access (user-splits.json) and other shared helpers
     cio.py                      ask_cio
     placeholder.py              template for a new tool
@@ -279,7 +284,8 @@ npx @modelcontextprotocol/inspector
 TOKEN=<user access token for api://<client-id>/access_as_user>
 uv run fastmcp list http://localhost:8000/mcp --auth "$TOKEN"
 uv run fastmcp call http://localhost:8000/mcp lookup_contacts last_name=GAVINSKI first_name='JAM*' --auth "$TOKEN"
-uv run fastmcp call http://localhost:8000/mcp lookup_insight_document client_id=<client id> --auth "$TOKEN"
+uv run fastmcp call http://localhost:8000/mcp lookup_relationship_id client_id=<client id> --auth "$TOKEN"
+uv run fastmcp call http://localhost:8000/mcp lookup_insight_document client_id=<client id> format=text --auth "$TOKEN"
 uv run fastmcp call http://localhost:8000/mcp ask_cio question="What is the house view?" --auth "$TOKEN"
 ```
 
@@ -332,5 +338,5 @@ INFO [8834d974a5f7] staat_assist_mcp: tool=lookup_contacts ok in 97ms
 | `Backend 'x' is not configured` | No `x` entry under `backends:` in `config.yaml` |
 | Warning `not set: ...` at startup | Those settings are empty and calls that need them fail. Secrets go in `.env` (copy `.env.example`), the rest in `config.yaml` |
 | Startup fails with a validation error | A misspelled field or an invalid value; the error names it |
-| `lookup_insight_document`: "token has no GPN claim" | The user's token for this server lacks the claim named by `gpn_claim`; add it to the token configuration of this server's app registration |
+| `lookup_insight_document` / `lookup_relationship_id`: "token has no GPN claim" | No `gpn` argument, and the user's token for this server lacks the claim named by `gpn_claim`; add it to the token configuration of this server's app registration |
 | `lookup_contacts`: "not provisioned for any split" | The user id from the token is not in `user-splits.json` (restart after editing the file) |
